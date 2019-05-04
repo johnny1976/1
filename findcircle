@@ -1,0 +1,193 @@
+#include "pch.h"
+#include <iostream>
+#include <opencv2/opencv.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/core/core.hpp>
+#include <sstream> 
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include "wrap.h"
+#include "HDid.h"
+#include "cvbasler.h"
+
+using namespace cv;
+using namespace std;
+
+#pragma warning(disable:4996)
+int test_hough(cv::Mat& src, std::vector<Vec3f>& circles);
+int test_drawcircles(cv::Mat& src, std::vector<Vec3f>& circles);
+int test_getcoordinate();
+
+
+static const string IP = "169.254.161.10";
+static const int PORT = 6000;
+static const int LEN = 100;//发送字符的长度
+static const int minidistance = 400, param1 = 150, param2 = 60, miniradius = 220, maxradius = 280;
+static const  int roi_x = 0, roi_y = 0, w = 1200, h = 700;     //ROI parameter 
+
+
+int main(int argc, char *argv[])
+{
+	
+	int id = compare_hdid();
+	//cout << "ID = " << id << endl;
+	if (id)
+	{
+		//std::cout << id << endl;
+		printf("id\n");
+		getchar();
+		return 0;
+	}
+	else
+	{
+		//printf(" 硬盘序列号匹配，继续执行\n");
+	}
+	
+
+	PylonInitialize();
+	WSADATA wsaData;
+	WSAStartup(MAKEWORD(2, 2), &wsaData);
+	Mat src;
+	double judge = 0;
+	std::vector<Vec3f> circles;
+	cv::Point2f p(1500, 1500);
+	SOCKADDR clntAddr;
+	int nSize = sizeof(SOCKADDR);
+	char buffer_client[LEN];
+	char buffer_server[LEN];
+	int strLen = 0;
+	SOCKET servSock = Socket(AF_INET, SOCK_STREAM, 0);
+	sockaddr_in sockAddr = set_sockAddr(AF_INET, IP, PORT);
+
+	Bind(servSock, (SOCKADDR*)&sockAddr, sizeof(SOCKADDR));
+	Listen(servSock, 20);
+	while (1) {
+		SOCKET clntSock = Accept(servSock, (SOCKADDR*)&clntAddr, &nSize);
+		if (clntSock)
+			std::cout << "connect" << endl;
+		else
+		{
+			continue;
+		}
+
+		while (1) {
+			memset(buffer_client, 0, LEN);
+			memset(buffer_server, 0, LEN);
+			strLen = Read(clntSock, buffer_client, LEN, 0);  //接收客户端发来的数据
+			if (strLen > 0) {
+				printf("recv clien value :  %s, and length = %d\n", buffer_client, strLen);
+
+#if 1
+				// get camerimg
+				ZPylonToOpenCv zpro;
+				cv::Mat tmp;
+				tmp = zpro.getImage();
+				resize(tmp, src, Size(), 0.5, 0.5);//缩小为原来的一半
+				cout << "image.cols=" << src.cols << " " << "image.width=" << src.rows << endl;
+
+
+				imwrite("a.jpg", src);
+#endif
+
+#if 0
+				src=imread("13.jpg",1);
+				resize(src, src, Size(), 0.5, 0.5); 
+#endif
+				//=>
+				Mat contours,dst;
+				Rect region_of_interst = Rect(roi_x, roi_y, w, h);
+				Mat src1 = src(region_of_interst);
+				imwrite("roi.jpg", src1);
+
+				cv::Canny(src1, contours, 5, 90);
+				imwrite("canny.jpg", contours);
+				int erosion_size = 2;
+				Mat element = getStructuringElement(cv::MORPH_CROSS,
+					cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1),
+					cv::Point(erosion_size, erosion_size));
+				
+				dilate(contours, dst, element);
+				imwrite("dilate.jpg", dst);
+
+				test_hough(dst, circles);
+				test_drawcircles(src, circles);
+				for (int i = 0; i < circles.size(); ++i)
+				{
+					printf("based  i = %d : p.x = %f, p.y = %f", i, p.x, p.y);
+					((p.x + p.y) > (circles[i][0] + circles[i][1])) ? (p.x = circles[i][0], p.y = circles[i][1]) : NULL;
+					//p.x = circles[i][0];
+					//p.y = circles[i][1];
+					printf("\nchange i = %d : p.x = %f, p.y = %f", i, p.x, p.y);
+					cout << "    radius = " << circles[i][2] << endl;
+					judge = 0;
+				}
+				if (circles.empty())
+				{
+					cout << "not found circle" << endl;
+					p.x = 0, p.y = 0, judge = -1;
+				}
+				cout << "(" << p.x << ", " << p.y << ")" << endl;
+				sprintf(buffer_server, "%.3f,%.3f,%.3f,%.3f", 0.000,p.x, p.y, judge);
+				cout << buffer_server << endl;
+				Write(clntSock, buffer_server, LEN, 0);
+				imwrite("out.jpg", src);
+				circles.clear();
+				p.x = 1500;
+				p.y = 1500;
+			}
+			else {
+				break;
+			}
+		}
+
+		Close(clntSock);
+		std::cout << "disconnect" << endl;
+	}
+	Close(servSock);
+
+	//imshow("Display Image", src);
+	//waitKey();
+	WSACleanup();
+	std::cerr << std::endl << "Press Enter to exit." << std::endl;
+	return 0;
+}
+
+int test_hough(cv::Mat& src, std::vector<Vec3f>& circles)
+{
+	if (src.empty())
+	{
+		std::cout << "Error opening image. \n";
+		return -1;
+	}
+	//cv::Mat gray;
+	//cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
+	//cv::GaussianBlur(gray, gray, Size(5, 5), 0, 0);
+	//HoughCircles(gray, circles, HOUGH_GRADIENT, 2, gray.rows / 10);
+	HoughCircles(src, circles, HOUGH_GRADIENT, 2, minidistance, param1, param2, miniradius, maxradius);
+	//HoughCircles(gray, circles, HOUGH_GRADIENT, 2, 200, 150, 60, 110, 125);
+
+	return 0;
+}
+int test_drawcircles(cv::Mat& src, std::vector<Vec3f>& circles)
+{
+	for (size_t i = 0; i < circles.size(); ++i)
+	{
+		Vec3i c = circles[i];
+		Point center = Point(c[0], c[1]);
+		std::ostringstream ostr1;
+		circle(src, center, 1, Scalar(0, 255, 0), 2, LINE_AA);
+		int radius = c[2];
+		circle(src, center, radius, Scalar(0, 0, 255), 1, LINE_AA);
+		ostr1 << "(" << c[0] << ", " << c[1] << ")";
+		cv::putText(src, ostr1.str(), center, cv::FONT_HERSHEY_COMPLEX_SMALL, 1, Scalar(255, 255, 255));
+	}
+
+	return 0;
+}
+int test_getcoordinate()
+{}
